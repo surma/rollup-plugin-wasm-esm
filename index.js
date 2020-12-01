@@ -33,13 +33,28 @@ const SPECIAL_IMPORT_CONTENT = `
   `;
 
 function functionExportNames(module) {
-  return Array.from({ length: module.getNumExports() })
+  return new Set(Array.from({ length: module.getNumExports() })
     .map((_, i) => {
       let exportRef = module.getExportByIndex(i);
       return binaryen.getExportInfo(exportRef);
     })
     .filter(exportDesc => exportDesc.kind === 0 /* type function */)
-    .map(exportDesc => exportDesc.name);
+    .map(exportDesc => exportDesc.name));
+}
+
+function moduleImports(m) {
+  const n = m.getNumFunctions();
+  const dependencies = new Map();
+  for(let i = 0; i < n; i++) {
+    const f = m.getFunctionByIndex(i);
+    const {module, base} = binaryen.getFunctionInfo(f);
+    if(!dependencies.has(module)) {
+      dependencies.set(module, [])
+    }
+    dependencies.get(module).push(base);
+  }
+  dependencies.delete('');
+  return dependencies;
 }
 
 function wasmEsm(opts) {
@@ -77,28 +92,40 @@ function wasmEsm(opts) {
       });
 
       const wasmModule = binaryen.readBinary(new Uint8Array(source));
-      const availableFunctions = new Set(functionExportNames(wasmModule));
+      const availableFunctions = functionExportNames(wasmModule);
+      const dependencies = new Map();
+      for(const [moduleImport, imports] of moduleImports(wasmModule)) {
+        const {id} = await this.resolve(moduleImport, name);
+        dependencies.set(moduleImport, {imports, id});
+      }
 
       handledModules.set(id, {
         filePath: name,
         availableFunctions,
         wasmModule,
         usedExports: new Set(),
-        referenceId
+        referenceId,
+        dependencies
       });
+
       return `
         import {compileStreaming} from "${SPECIAL_IMPORT}";
+        ${
+          [...dependencies.entries()].map(([_name, {imports, id}], i) => `import {${imports.map(name => `${name} as dep${i}_${name}`).join(", ")}} from "${id}";`).join("\n")
+        }
         const wasmUrl = import.meta.ROLLUP_FILE_URL_${referenceId}
         const modulePromise = compileStreaming(fetch(wasmUrl));
-        let instance;
-        export default async function init(importObj) {
-          const module = await modulePromise;
-          instance = WebAssembly.instantiate(module, importObj);
-        }
+        const importObj = {
+          ${
+            // [...dependencies.entries()].map(([name], i) => `"${name}": dep${i},`).join("\n")
+            [...dependencies.entries()].map(([name, {imports, id}], i) => `"${name}": {${imports.map(name => `"${name}": dep${i}_${name}`).join(",")}},`).join("\n")
+          }
+        };
+        const instance = await WebAssembly.instantiate(modulePromise, importObj);
         ${[...availableFunctions]
           .map(
             name =>
-              `export function ${name}(...args) { return instance.exports.${name}(...args); }`
+              `export const ${name} = /*@__PURE__*/(() => instance.exports.${name})();`
           )
           .join("\n")}
       `;
@@ -128,9 +155,7 @@ function wasmEsm(opts) {
         deletedExports.forEach(functionName =>
           wasmModule.removeExport(functionName)
         );
-        // HOW??!
-        // wasmModule.runPasses(["DeadCodeElimination"]);
-        wasmModule.optimize();
+        wasmModule.runPasses(["dce"]);
         const binary = wasmModule.emitBinary();
         const fileName = this.getFileName(referenceId);
         bundle[fileName].source = Buffer.from(binary.buffer);

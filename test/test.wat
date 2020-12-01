@@ -1,6 +1,7 @@
 (module
+  (import "./glue.js" "numCores" (func $numCores (result i32)))
   (func (export "a") (result i32)
-    i32.const 0
+    (call $numCores)
   )
   (func (export "b") (result i32)
     i32.const 1
