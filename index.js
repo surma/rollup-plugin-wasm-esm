@@ -32,6 +32,7 @@ const SPECIAL_IMPORT_CONTENT = `
     }
   `;
 
+// Get the names of all the exported functions of a wasm module
 function functionExportNames(module) {
   return new Set(Array.from({ length: module.getNumExports() })
     .map((_, i) => {
@@ -42,18 +43,21 @@ function functionExportNames(module) {
     .map(exportDesc => exportDesc.name));
 }
 
+// Get a map of all named import namespaces and imported objects.
 function moduleImports(m) {
   const n = m.getNumFunctions();
   const dependencies = new Map();
   for(let i = 0; i < n; i++) {
     const f = m.getFunctionByIndex(i);
     const {module, base} = binaryen.getFunctionInfo(f);
+    if(!(module.startsWith("/") || module.startsWith("."))) {
+      continue;
+    }
     if(!dependencies.has(module)) {
       dependencies.set(module, [])
     }
     dependencies.get(module).push(base);
   }
-  dependencies.delete('');
   return dependencies;
 }
 
@@ -108,6 +112,7 @@ function wasmEsm(opts) {
         dependencies
       });
 
+      // TODO: There is probably a much neater way to do the code generation here. But ceebs.
       return `
         import {compileStreaming} from "${SPECIAL_IMPORT}";
         ${
@@ -117,7 +122,6 @@ function wasmEsm(opts) {
         const modulePromise = compileStreaming(fetch(wasmUrl));
         const importObj = {
           ${
-            // [...dependencies.entries()].map(([name], i) => `"${name}": dep${i},`).join("\n")
             [...dependencies.entries()].map(([name, {imports, id}], i) => `"${name}": {${imports.map(name => `"${name}": dep${i}_${name}`).join(",")}},`).join("\n")
           }
         };
