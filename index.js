@@ -155,7 +155,7 @@ function wasmEsm(opts) {
         deletedExports.forEach(functionName =>
           wasmModule.removeExport(functionName)
         );
-        wasmModule.runPasses(["dce"]);
+        wasmModule.runPasses(["dce", "remove-unused-module-elements", "remove-unused-brs"]);
         const binary = wasmModule.emitBinary();
         const fileName = this.getFileName(referenceId);
         bundle[fileName].source = Buffer.from(binary.buffer);
